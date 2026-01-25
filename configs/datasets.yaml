@@ -1,0 +1,26 @@
+datasets:
+  sipakmed:
+    type: image_classification
+    raw_dir: "sipakmed"
+    label_mode: folder_name
+    classes:
+      - im_Dyskeratotic
+      - im_Koilocytotic
+      - im_Metaplastic
+      - im_Parabasal
+      - im_Superficial-Intermediate
+
+  lc25000:
+    type: image_classification
+    raw_dir: "lc25000"
+    label_mode: folder_name_or_subfolder
+
+  rm1000_lung_history:
+    type: image_classification
+    raw_dir: "rm1000_lung_history"
+    label_mode: folder_name
+
+  thyroid_recurrence:
+    type: tabular
+    raw_dir: "thyroid_recurrence"
+    file: "Thyroid_Diff.csv"

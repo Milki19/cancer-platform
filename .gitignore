@@ -1,0 +1,31 @@
+# data
+data/raw/
+data/curated/
+data/tmp/
+
+#Extra safety
+Data/raw/
+Data/curated/
+Data/tmp/
+artifacts/
+configs/local.yaml
+
+# artifacts
+artifacts/
+models/
+reports/
+logs/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# notebooks outputs
+.ipynb_checkpoints/
+
+# secrets / local configs
+configs/local.yaml
+.env
+
+
