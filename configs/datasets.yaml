@@ -1,26 +1,70 @@
+project:
+  name: cancer-platform
+  seed: 42
+
+paths:
+  data_root: Data
+  raw: Data/raw
+  curated: Data/curated
+  curated_qc: Data/curated_qc
+  curated_v2: Data/curated_v2
+  runs: Runs
+
 datasets:
   sipakmed:
-    type: image_classification
-    raw_dir: "sipakmed"
-    label_mode: folder_name
-    classes:
-      - im_Dyskeratotic
-      - im_Koilocytotic
-      - im_Metaplastic
-      - im_Parabasal
-      - im_Superficial-Intermediate
+    display_name: SIPaKMeD
+    type: image
+    task: cervical_cell_classification
+    kaggle_slug: prahladmehandiratta/cervical-cancer-largest-dataset-sipakmed
+    raw_dir: Data/raw/sipakmed
+    curated_dir: Data/curated/sipakmed
+    notes:
+      - Uses CROPPED images for the main experiments.
+      - Five-class cervical cell classification.
 
   lc25000:
-    type: image_classification
-    raw_dir: "lc25000"
-    label_mode: folder_name_or_subfolder
+    display_name: LC25000
+    type: image
+    task: lung_colon_histopathology_classification
+    kaggle_slug: andrewmvd/lung-and-colon-cancer-histopathological-images
+    raw_dir: Data/raw/lc25000
+    curated_dir: Data/curated/lc25000
+    curated_v2_dir: Data/curated_v2/lc25000
+    notes:
+      - Histopathology image dataset.
+      - Leakage-free split generated using MD5 grouping.
 
-  rm1000_lung_history:
-    type: image_classification
-    raw_dir: "rm1000_lung_history"
-    label_mode: folder_name
+  rm1000_lung:
+    display_name: RM1000 Lung
+    type: image
+    task: lung_tissue_classification
+    kaggle_slug: rm1000/lung-cancer-histopathological-images
+    raw_dir: Data/raw/rm1000_lung
+    curated_dir: Data/curated/rm1000_lung
+    curated_v2_dir: Data/curated_v2/rm1000_lung
+    notes:
+      - Three-class lung histopathology classification.
+      - Leakage-free split generated using MD5 grouping.
 
   thyroid_recurrence:
+    display_name: Thyroid Recurrence
     type: tabular
-    raw_dir: "thyroid_recurrence"
-    file: "Thyroid_Diff.csv"
+    task: recurrence_prediction
+    kaggle_slug: joebeachcapital/differentiated-thyroid-cancer-recurrence
+    raw_dir: Data/raw/thyroid_recurrence
+    curated_dir: Data/curated/thyroid_recurrence
+    notes:
+      - Tabular clinical dataset.
+      - Duplicate rows removed before splitting.
+
+splitting:
+  train_size: 0.70
+  val_size: 0.15
+  test_size: 0.15
+  stratified: true
+
+evaluation:
+  metrics:
+    - accuracy
+    - macro_f1
+    - confusion_matrix

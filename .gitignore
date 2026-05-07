@@ -2,6 +2,7 @@
 data/raw/
 data/curated/
 data/tmp/
+data/kaggle.json
 
 #Extra safety
 Data/raw/
