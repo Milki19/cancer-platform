@@ -1,18 +1,17 @@
-# src/scan_raw.py
-
 from __future__ import annotations
+
 import json
-from dataclasses import dataclass, asdict
-from pathlib import Path
 from collections import Counter
-from typing import Dict, Any, List, Optional, Tuple
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+import argparse
 
 try:
-    import yaml  # pyyaml
-except ImportError as e:
-    raise SystemExit("Missing dependency: pyyaml. Install with: pip install pyyaml") from e
+    import yaml
+except ImportError as error:
+    raise SystemExit("Missing dependency: PyYAML. Install with: pip install PyYAML") from error
 
-# Optional (only for tabular preview)
 try:
     import pandas as pd
 except Exception:
@@ -25,21 +24,16 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 @dataclass
 class DatasetScanResult:
     dataset_id: str
+    display_name: str
     dtype: str
     raw_path: str
     ok: bool
     message: str
-
-    # image-ish
-    class_dirs: Optional[List[str]] = None
-    class_counts: Optional[Dict[str, int]] = None
-
-    # general file stats
     total_files: int = 0
     total_bytes: int = 0
     ext_counts: Optional[Dict[str, int]] = None
-
-    # tabular preview
+    class_dirs: Optional[List[str]] = None
+    class_counts: Optional[Dict[str, int]] = None
     tabular_shape: Optional[Tuple[int, int]] = None
     tabular_columns: Optional[List[str]] = None
 
@@ -47,236 +41,343 @@ class DatasetScanResult:
 def load_yaml(path: Path) -> Dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"YAML not found: {path}")
-    with path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+
+    with path.open("r", encoding="utf-8") as file:
+        return yaml.safe_load(file) or {}
 
 
-def human_bytes(n: int) -> str:
+def human_bytes(value: int) -> str:
     units = ["B", "KB", "MB", "GB", "TB"]
-    x = float(n)
-    for u in units:
-        if x < 1024.0 or u == units[-1]:
-            return f"{x:.2f} {u}"
-        x /= 1024.0
-    return f"{n} B"
+    size = float(value)
+
+    for unit in units:
+        if size < 1024.0 or unit == units[-1]:
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+
+    return f"{value} B"
+
+
+def resolve_path(root_dir: Path, path_value: str) -> Path:
+    path = Path(path_value)
+
+    if path.is_absolute():
+        return path
+
+    return (root_dir / path).resolve()
 
 
 def list_files_recursive(root: Path) -> List[Path]:
     if not root.exists():
         return []
-    return [p for p in root.rglob("*") if p.is_file()]
+
+    return [path for path in root.rglob("*") if path.is_file()]
 
 
-def scan_image_dataset(dataset_id: str, ds_cfg: Dict[str, Any], raw_root: Path) -> DatasetScanResult:
-    raw_dir = ds_cfg.get("raw_dir", dataset_id)
-    ds_path = (raw_root / raw_dir).resolve()
-
-    if not ds_path.exists():
-        return DatasetScanResult(
-            dataset_id=dataset_id,
-            dtype=ds_cfg.get("type", "image_classification"),
-            raw_path=str(ds_path),
-            ok=False,
-            message="Raw path does not exist. Check configs/local.yaml data_root and datasets.yaml raw_dir.",
-        )
-
-    # Class dirs: if explicit classes list exists, use it; otherwise infer from first-level dirs
-    classes = ds_cfg.get("classes")
-    if classes:
-        class_dirs = [ds_path / c for c in classes]
-    else:
-        class_dirs = [p for p in ds_path.iterdir() if p.is_dir()]
-
-    class_counts: Dict[str, int] = {}
+def count_files(files: List[Path]) -> Tuple[int, int, Dict[str, int]]:
     ext_counter = Counter()
     total_bytes = 0
-    total_files = 0
 
-    for cdir in sorted(class_dirs, key=lambda x: x.name.lower()):
-        if not cdir.exists():
-            class_counts[cdir.name] = 0
-            continue
+    for file_path in files:
+        ext_counter[file_path.suffix.lower()] += 1
 
-        # Count images recursively (some Kaggle datasets nest folders)
-        files = [p for p in cdir.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
-        class_counts[cdir.name] = len(files)
-        total_files += len(files)
-
-        for f in files:
-            ext_counter[f.suffix.lower()] += 1
-            try:
-                total_bytes += f.stat().st_size
-            except OSError:
-                pass
-
-    # if dataset is not organized by class folders (rare), fallback count whole ds_path
-    if total_files == 0:
-        files = [p for p in ds_path.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
-        total_files = len(files)
-        for f in files:
-            ext_counter[f.suffix.lower()] += 1
-            try:
-                total_bytes += f.stat().st_size
-            except OSError:
-                pass
-
-    return DatasetScanResult(
-        dataset_id=dataset_id,
-        dtype=ds_cfg.get("type", "image_classification"),
-        raw_path=str(ds_path),
-        ok=True,
-        message="OK",
-        class_dirs=[p.name for p in class_dirs],
-        class_counts=class_counts,
-        total_files=total_files,
-        total_bytes=total_bytes,
-        ext_counts=dict(ext_counter),
-    )
-
-
-def scan_tabular_dataset(dataset_id: str, ds_cfg: Dict[str, Any], raw_root: Path) -> DatasetScanResult:
-    raw_dir = ds_cfg.get("raw_dir", dataset_id)
-    ds_path = (raw_root / raw_dir).resolve()
-    if not ds_path.exists():
-        return DatasetScanResult(
-            dataset_id=dataset_id,
-            dtype=ds_cfg.get("type", "tabular"),
-            raw_path=str(ds_path),
-            ok=False,
-            message="Raw path does not exist. Check configs/local.yaml and datasets.yaml.",
-        )
-
-    fname = ds_cfg.get("file")
-    if not fname:
-        # try to infer a single csv/xlsx in folder
-        candidates = list(ds_path.glob("*.csv")) + list(ds_path.glob("*.xlsx")) + list(ds_path.glob("*.xls"))
-        if len(candidates) == 1:
-            fpath = candidates[0]
-        else:
-            return DatasetScanResult(
-                dataset_id=dataset_id,
-                dtype=ds_cfg.get("type", "tabular"),
-                raw_path=str(ds_path),
-                ok=False,
-                message="Tabular file not specified and could not infer a single CSV/XLSX.",
-            )
-    else:
-        fpath = (ds_path / fname).resolve()
-        if not fpath.exists():
-            return DatasetScanResult(
-                dataset_id=dataset_id,
-                dtype=ds_cfg.get("type", "tabular"),
-                raw_path=str(ds_path),
-                ok=False,
-                message=f"Tabular file missing: {fpath.name}",
-            )
-
-    ext_counter = Counter()
-    total_bytes = 0
-    total_files = 0
-
-    # Count all files in tabular folder (small)
-    files = list_files_recursive(ds_path)
-    total_files = len(files)
-    for f in files:
-        ext_counter[f.suffix.lower()] += 1
         try:
-            total_bytes += f.stat().st_size
+            total_bytes += file_path.stat().st_size
         except OSError:
             pass
 
-    shape = None
-    cols = None
-    if pd is not None:
-        try:
-            if fpath.suffix.lower() == ".csv":
-                df = pd.read_csv(fpath)
-            else:
-                df = pd.read_excel(fpath)  # openpyxl is usually available in Colab
-            shape = df.shape
-            cols = list(df.columns.astype(str))
-        except Exception as e:
-            # Don't fail the scan just because preview failed
-            return DatasetScanResult(
-                dataset_id=dataset_id,
-                dtype=ds_cfg.get("type", "tabular"),
-                raw_path=str(ds_path),
-                ok=True,
-                message=f"OK (tabular preview failed: {e})",
-                total_files=total_files,
-                total_bytes=total_bytes,
-                ext_counts=dict(ext_counter),
-            )
+    return len(files), total_bytes, dict(ext_counter)
+
+
+def find_image_files(root: Path) -> List[Path]:
+    return [
+        path
+        for path in root.rglob("*")
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTS
+    ]
+
+
+def infer_image_class_counts(root: Path) -> Tuple[List[str], Dict[str, int]]:
+    first_level_dirs = [path for path in root.iterdir() if path.is_dir()]
+    class_counts: Dict[str, int] = {}
+
+    for directory in sorted(first_level_dirs, key=lambda item: item.name.lower()):
+        image_files = find_image_files(directory)
+        if image_files:
+            class_counts[directory.name] = len(image_files)
+
+    if len(class_counts) >= 2:
+        return list(class_counts.keys()), class_counts
+
+    leaf_counts: Dict[str, int] = {}
+
+    for directory in root.rglob("*"):
+        if not directory.is_dir():
+            continue
+
+        direct_images = [
+            path
+            for path in directory.iterdir()
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTS
+        ]
+
+        if direct_images:
+            leaf_counts[directory.name] = len(direct_images)
+
+    if leaf_counts:
+        return list(leaf_counts.keys()), leaf_counts
+
+    return [], {}
+
+
+def scan_image_dataset(dataset_id: str, dataset_config: Dict[str, Any], root_dir: Path) -> DatasetScanResult:
+    raw_dir_value = dataset_config.get("raw_dir")
+
+    if not raw_dir_value:
+        return DatasetScanResult(
+            dataset_id=dataset_id,
+            display_name=dataset_config.get("display_name", dataset_id),
+            dtype=dataset_config.get("type", "image"),
+            raw_path="",
+            ok=False,
+            message="Missing raw_dir in configs/datasets.yaml.",
+        )
+
+    dataset_path = resolve_path(root_dir, raw_dir_value)
+
+    if not dataset_path.exists():
+        return DatasetScanResult(
+            dataset_id=dataset_id,
+            display_name=dataset_config.get("display_name", dataset_id),
+            dtype=dataset_config.get("type", "image"),
+            raw_path=str(dataset_path),
+            ok=False,
+            message="Raw path does not exist. Run scripts/download_kaggle_data.py first.",
+        )
+
+    image_files = find_image_files(dataset_path)
+    total_files, total_bytes, ext_counts = count_files(image_files)
+    class_dirs, class_counts = infer_image_class_counts(dataset_path)
+
+    message = "OK" if total_files > 0 else "No image files found."
 
     return DatasetScanResult(
         dataset_id=dataset_id,
-        dtype=ds_cfg.get("type", "tabular"),
-        raw_path=str(ds_path),
-        ok=True,
-        message="OK",
+        display_name=dataset_config.get("display_name", dataset_id),
+        dtype=dataset_config.get("type", "image"),
+        raw_path=str(dataset_path),
+        ok=total_files > 0,
+        message=message,
         total_files=total_files,
         total_bytes=total_bytes,
-        ext_counts=dict(ext_counter),
-        tabular_shape=shape,
-        tabular_columns=cols,
+        ext_counts=ext_counts,
+        class_dirs=class_dirs,
+        class_counts=class_counts,
     )
 
 
+def find_tabular_file(dataset_path: Path, dataset_config: Dict[str, Any]) -> Optional[Path]:
+    file_name = dataset_config.get("file")
+
+    if file_name:
+        file_path = (dataset_path / file_name).resolve()
+        return file_path if file_path.exists() else None
+
+    candidates = (
+        list(dataset_path.rglob("*.csv"))
+        + list(dataset_path.rglob("*.xlsx"))
+        + list(dataset_path.rglob("*.xls"))
+    )
+
+    if not candidates:
+        return None
+
+    candidates = sorted(candidates, key=lambda path: path.stat().st_size, reverse=True)
+    return candidates[0]
+
+
+def scan_tabular_dataset(dataset_id: str, dataset_config: Dict[str, Any], root_dir: Path) -> DatasetScanResult:
+    raw_dir_value = dataset_config.get("raw_dir")
+
+    if not raw_dir_value:
+        return DatasetScanResult(
+            dataset_id=dataset_id,
+            display_name=dataset_config.get("display_name", dataset_id),
+            dtype=dataset_config.get("type", "tabular"),
+            raw_path="",
+            ok=False,
+            message="Missing raw_dir in configs/datasets.yaml.",
+        )
+
+    dataset_path = resolve_path(root_dir, raw_dir_value)
+
+    if not dataset_path.exists():
+        return DatasetScanResult(
+            dataset_id=dataset_id,
+            display_name=dataset_config.get("display_name", dataset_id),
+            dtype=dataset_config.get("type", "tabular"),
+            raw_path=str(dataset_path),
+            ok=False,
+            message="Raw path does not exist. Run scripts/download_kaggle_data.py first.",
+        )
+
+    all_files = list_files_recursive(dataset_path)
+    total_files, total_bytes, ext_counts = count_files(all_files)
+    tabular_file = find_tabular_file(dataset_path, dataset_config)
+
+    if tabular_file is None:
+        return DatasetScanResult(
+            dataset_id=dataset_id,
+            display_name=dataset_config.get("display_name", dataset_id),
+            dtype=dataset_config.get("type", "tabular"),
+            raw_path=str(dataset_path),
+            ok=False,
+            message="No CSV/XLS/XLSX file found.",
+            total_files=total_files,
+            total_bytes=total_bytes,
+            ext_counts=ext_counts,
+        )
+
+    if pd is None:
+        return DatasetScanResult(
+            dataset_id=dataset_id,
+            display_name=dataset_config.get("display_name", dataset_id),
+            dtype=dataset_config.get("type", "tabular"),
+            raw_path=str(dataset_path),
+            ok=True,
+            message=f"OK. Found tabular file: {tabular_file.name}. Pandas not available for preview.",
+            total_files=total_files,
+            total_bytes=total_bytes,
+            ext_counts=ext_counts,
+        )
+
+    try:
+        if tabular_file.suffix.lower() == ".csv":
+            dataframe = pd.read_csv(tabular_file)
+        else:
+            dataframe = pd.read_excel(tabular_file)
+
+        return DatasetScanResult(
+            dataset_id=dataset_id,
+            display_name=dataset_config.get("display_name", dataset_id),
+            dtype=dataset_config.get("type", "tabular"),
+            raw_path=str(dataset_path),
+            ok=True,
+            message=f"OK. Found tabular file: {tabular_file.name}",
+            total_files=total_files,
+            total_bytes=total_bytes,
+            ext_counts=ext_counts,
+            tabular_shape=dataframe.shape,
+            tabular_columns=list(dataframe.columns.astype(str)),
+        )
+
+    except Exception as error:
+        return DatasetScanResult(
+            dataset_id=dataset_id,
+            display_name=dataset_config.get("display_name", dataset_id),
+            dtype=dataset_config.get("type", "tabular"),
+            raw_path=str(dataset_path),
+            ok=True,
+            message=f"OK. Found tabular file: {tabular_file.name}. Preview failed: {error}",
+            total_files=total_files,
+            total_bytes=total_bytes,
+            ext_counts=ext_counts,
+        )
+
+
+def scan_dataset(dataset_id: str, dataset_config: Dict[str, Any], root_dir: Path) -> DatasetScanResult:
+    dataset_type = (dataset_config.get("type") or "").lower()
+
+    if dataset_type == "tabular":
+        return scan_tabular_dataset(dataset_id, dataset_config, root_dir)
+
+    return scan_image_dataset(dataset_id, dataset_config, root_dir)
+
+
+def print_result(result: DatasetScanResult) -> None:
+    status = "OK" if result.ok else "MISSING"
+
+    print(f"{status} | {result.dataset_id} | {result.display_name} | {result.dtype}")
+    print(f"Path: {result.raw_path}")
+    print(f"Message: {result.message}")
+    print(f"Files: {result.total_files} | Size: {human_bytes(result.total_bytes)}")
+
+    if result.ext_counts:
+        top_extensions = sorted(result.ext_counts.items(), key=lambda item: item[1], reverse=True)[:8]
+        print(f"Extensions: {top_extensions}")
+
+    if result.class_counts:
+        top_classes = sorted(result.class_counts.items(), key=lambda item: item[1], reverse=True)[:12]
+        print(f"Classes: {top_classes}")
+
+    if result.tabular_shape:
+        print(f"Tabular shape: {result.tabular_shape}")
+
+    if result.tabular_columns:
+        preview_columns = result.tabular_columns[:12]
+        suffix = " ..." if len(result.tabular_columns) > 12 else ""
+        print(f"Columns: {preview_columns}{suffix}")
+
+    print()
+
+
 def main() -> int:
-    root = Path(__file__).resolve().parents[1]  # project root (src/..)
-    local_cfg = load_yaml(root / "configs" / "local.yaml")
-    datasets_cfg = load_yaml(root / "configs" / "datasets.yaml")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default=None)
+    args = parser.parse_args()
 
-    data_root = Path(local_cfg["data_root"]).resolve()
-    raw_root = (data_root / "raw").resolve()
+    root_dir = Path(__file__).resolve().parents[1]
+    config = load_yaml(root_dir / "configs" / "datasets.yaml")
+    datasets = config.get("datasets", {})
 
-    datasets = datasets_cfg.get("datasets", {})
     if not datasets:
         print("No datasets defined in configs/datasets.yaml under key: datasets")
         return 1
 
-    results: List[DatasetScanResult] = []
+    if args.dataset:
+        if args.dataset not in datasets:
+            print(f"Unknown dataset: {args.dataset}")
+            print("Available datasets:")
+            for dataset_id in datasets:
+                print(f"- {dataset_id}")
+            return 1
 
-    for dataset_id, ds_cfg in datasets.items():
-        dtype = (ds_cfg.get("type") or "").lower()
-        if "tabular" in dtype:
-            res = scan_tabular_dataset(dataset_id, ds_cfg, raw_root)
-        else:
-            res = scan_image_dataset(dataset_id, ds_cfg, raw_root)
-        results.append(res)
+        datasets_to_scan = {args.dataset: datasets[args.dataset]}
+    else:
+        datasets_to_scan = datasets
 
-    # Pretty print
-    print(f"Data root: {data_root}")
-    print(f"Raw root : {raw_root}\n")
+    results = [
+        scan_dataset(dataset_id, dataset_config, root_dir)
+        for dataset_id, dataset_config in datasets_to_scan.items()
+    ]
 
-    for r in results:
-        status = "✅" if r.ok else "❌"
-        print(f"{status} {r.dataset_id} [{r.dtype}]")
-        print(f"   path: {r.raw_path}")
-        print(f"   msg : {r.message}")
-        print(f"   files: {r.total_files} | size: {human_bytes(r.total_bytes)}")
-        if r.ext_counts:
-            top_ext = sorted(r.ext_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-            print(f"   top ext: {top_ext}")
-        if r.class_counts:
-            # show top 8 classes by count
-            top_classes = sorted(r.class_counts.items(), key=lambda x: x[1], reverse=True)[:8]
-            print(f"   classes: {top_classes}")
-        if r.tabular_shape:
-            print(f"   tabular: shape={r.tabular_shape}")
-            print(f"   columns: {r.tabular_columns[:12]}{' ...' if len(r.tabular_columns) > 12 else ''}")
-        print()
+    print(f"Project root: {root_dir}")
+    print()
 
-    # Save summary artifact (not in git by default if you put it in artifacts/)
-    out_dir = root / "artifacts" / "reports"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "scan_raw_summary.json"
-    with out_path.open("w", encoding="utf-8") as f:
-        json.dump([asdict(r) for r in results], f, ensure_ascii=False, indent=2)
+    for result in results:
+        print_result(result)
 
-    print(f"Saved: {out_path}")
+    output_dir = root_dir / "artifacts" / "reports"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    output_name = "scan_raw_summary.json"
+    if args.dataset:
+        output_name = f"scan_raw_summary_{args.dataset}.json"
+
+    output_path = output_dir / output_name
+
+    with output_path.open("w", encoding="utf-8") as file:
+        json.dump([asdict(result) for result in results], file, ensure_ascii=False, indent=2)
+
+    print(f"Saved: {output_path}")
+
+    missing = [result.dataset_id for result in results if not result.ok]
+
+    if missing:
+        print(f"Datasets with issues: {missing}")
+        return 1
+
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

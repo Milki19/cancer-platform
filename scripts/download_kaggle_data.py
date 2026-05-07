@@ -1,5 +1,6 @@
 from pathlib import Path
 import argparse
+import shutil
 import subprocess
 import sys
 
@@ -26,6 +27,41 @@ def resolve_path(root_dir: Path, path_value: str) -> Path:
     return root_dir / path
 
 
+def find_kaggle_executable() -> str:
+    kaggle_path = shutil.which("kaggle")
+
+    if kaggle_path:
+        return kaggle_path
+
+    possible_windows_path = (
+        Path.home()
+        / "AppData"
+        / "Roaming"
+        / "Python"
+        / f"Python{sys.version_info.major}{sys.version_info.minor}"
+        / "Scripts"
+        / "kaggle.exe"
+    )
+
+    if possible_windows_path.exists():
+        return str(possible_windows_path)
+
+    print("Kaggle CLI was not found.")
+    print("Install it with:")
+    print("  pip install kaggle")
+    print()
+    print("On Windows, make sure this folder is added to PATH:")
+    print(
+        Path.home()
+        / "AppData"
+        / "Roaming"
+        / "Python"
+        / f"Python{sys.version_info.major}{sys.version_info.minor}"
+        / "Scripts"
+    )
+    sys.exit(1)
+
+
 def run_command(command: list[str]) -> None:
     result = subprocess.run(command)
 
@@ -33,7 +69,13 @@ def run_command(command: list[str]) -> None:
         sys.exit(result.returncode)
 
 
-def download_dataset(dataset_name: str, dataset_config: dict, root_dir: Path, force: bool) -> None:
+def download_dataset(
+    dataset_name: str,
+    dataset_config: dict,
+    root_dir: Path,
+    kaggle_executable: str,
+    force: bool,
+) -> None:
     kaggle_slug = dataset_config.get("kaggle_slug")
     raw_dir_value = dataset_config.get("raw_dir")
 
@@ -59,7 +101,7 @@ def download_dataset(dataset_name: str, dataset_config: dict, root_dir: Path, fo
     print(f"Target directory: {target_dir}")
 
     command = [
-        "kaggle",
+        kaggle_executable,
         "datasets",
         "download",
         "-d",
@@ -81,10 +123,13 @@ def main() -> None:
     root_dir = Path(__file__).resolve().parents[1]
     config = load_config(root_dir)
     datasets = config.get("datasets", {})
+    kaggle_executable = find_kaggle_executable()
 
     if not datasets:
         print("No datasets found in configs/datasets.yaml")
         sys.exit(1)
+
+    print(f"Using Kaggle CLI: {kaggle_executable}")
 
     if args.dataset:
         if args.dataset not in datasets:
@@ -94,10 +139,22 @@ def main() -> None:
                 print(f"- {dataset_name}")
             sys.exit(1)
 
-        download_dataset(args.dataset, datasets[args.dataset], root_dir, args.force)
+        download_dataset(
+            args.dataset,
+            datasets[args.dataset],
+            root_dir,
+            kaggle_executable,
+            args.force,
+        )
     else:
         for dataset_name, dataset_config in datasets.items():
-            download_dataset(dataset_name, dataset_config, root_dir, args.force)
+            download_dataset(
+                dataset_name,
+                dataset_config,
+                root_dir,
+                kaggle_executable,
+                args.force,
+            )
 
     print("Download workflow finished.")
 
