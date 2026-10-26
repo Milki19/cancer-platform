@@ -6,6 +6,7 @@ data/
 artifacts/
 models/
 reports/
+Reports/
 logs/
 Runs/
 outputs/
